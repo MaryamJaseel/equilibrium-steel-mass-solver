@@ -1,0 +1,2184 @@
+# ==============================================================
+# LIQUID IRON - SLAG EQUILIBRIUM SOLVER
+#
+# Python Engineering Software
+#
+# Features:
+#   1. 12-equation equilibrium model
+#   2. Thermodynamic Q = K relations
+#   3. Elemental mass balances
+#   4. Newton-Raphson solution
+#   5. Under-relaxation, phi = 0.05
+#   6. Starts with nSL = 0
+#   7. Convergence history and plots
+#   8. Mass-balance verification
+#   9. Sensitivity analysis
+#  10. Tkinter graphical interface
+#
+# Required packages:
+#       numpy
+#       matplotlib
+#
+# ==============================================================
+
+import numpy as np
+import tkinter as tk
+
+from tkinter import ttk, messagebox
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+
+# ==============================================================
+# 1. THERMODYNAMIC CONSTANTS
+# ==============================================================
+
+K1 = 46194.5
+K2 = 14.531
+K3 = 4.678
+
+
+# ==============================================================
+# 2. ATOMIC MASSES
+# ==============================================================
+
+M_Si = 28.0855
+M_Mn = 54.938
+M_O  = 15.999
+M_Fe = 55.845
+
+
+# Molecular masses
+
+M_SiO2 = M_Si + 2*M_O
+M_MnO  = M_Mn + M_O
+M_FeO  = M_Fe + M_O
+
+
+# ==============================================================
+# 3. EQUILIBRIUM SOLVER
+# ==============================================================
+
+def solve_equilibrium(
+        initial_mass,
+        Si_initial,
+        Mn_initial,
+        O_initial,
+        phi=0.05,
+        tolerance=1e-10,
+        max_iterations=5000):
+
+
+    # ----------------------------------------------------------
+    # INITIAL MASS CALCULATION
+    # ----------------------------------------------------------
+
+    m0_Si = initial_mass * Si_initial / 100.0
+
+    m0_Mn = initial_mass * Mn_initial / 100.0
+
+    m0_O = initial_mass * O_initial / 100.0
+
+    m0_Fe = (
+        initial_mass
+        - m0_Si
+        - m0_Mn
+        - m0_O
+    )
+
+
+    # Check composition
+
+    if m0_Fe <= 0:
+
+        raise ValueError(
+            "Initial composition is invalid. "
+            "Si + Mn + O must be less than 100 wt%."
+        )
+
+
+    # ----------------------------------------------------------
+    # INITIAL 12 VARIABLES
+    #
+    # nSiO2
+    # nMnO
+    # nFeO
+    # nSL
+    #
+    # mSi
+    # mMn
+    # mFe
+    # mO
+    # mLI
+    #
+    # %Si
+    # %Mn
+    # %O
+    #
+    # nSL starts EXACTLY at zero.
+    # ----------------------------------------------------------
+
+    u = np.array([
+
+        0.0,                # nSiO2
+        0.0,                # nMnO
+        0.0,                # nFeO
+        0.0,                # nSL
+
+        m0_Si,              # mSi
+        m0_Mn,              # mMn
+        m0_Fe,              # mFe
+        m0_O,               # mO
+        initial_mass,       # mLI
+
+        Si_initial,         # %Si
+        Mn_initial,         # %Mn
+        O_initial           # %O
+
+    ], dtype=float)
+
+
+    # ----------------------------------------------------------
+    # VARIABLE SCALING
+    #
+    # Helps the Newton calculation because variables have
+    # very different magnitudes.
+    # ----------------------------------------------------------
+
+    u_scale = np.array([
+
+        0.1,
+        0.1,
+        0.1,
+        0.4,
+
+        max(abs(m0_Si), 1.0),
+        max(abs(m0_Mn), 1.0),
+        max(abs(m0_Fe), 100.0),
+        max(abs(m0_O), 1.0),
+        initial_mass,
+
+        max(abs(Si_initial), 0.5),
+        max(abs(Mn_initial), 0.5),
+        max(abs(O_initial), 1.0)
+
+    ], dtype=float)
+
+
+    # ----------------------------------------------------------
+    # RESIDUAL EQUATIONS
+    # ----------------------------------------------------------
+
+    def residual(u):
+
+        # Unpack variables
+
+        nSiO2 = u[0]
+        nMnO  = u[1]
+        nFeO  = u[2]
+        nSL   = u[3]
+
+        mSi   = u[4]
+        mMn   = u[5]
+        mFe   = u[6]
+        mO    = u[7]
+        mLI   = u[8]
+
+        Si    = u[9]
+        Mn    = u[10]
+        O     = u[11]
+
+
+        # ------------------------------------------------------
+        # ACTIVITY COEFFICIENTS
+        # ------------------------------------------------------
+
+        fSi = 10.0 ** (
+
+            0.032*Si
+            -
+            0.025*O
+
+        )
+
+        fO = 10.0 ** (
+
+            0.025*Si
+            -
+            0.020*O
+
+        )
+
+
+        # ======================================================
+        # EQUATION 1
+        #
+        # nSiO2 =
+        # nSL*K1*(fSi*Si)*(fO*O)^2
+        # ======================================================
+
+        r1 = (
+
+            nSiO2
+            -
+            nSL*K1*fSi*Si*(fO*O)**2
+
+        )
+
+
+        # ======================================================
+        # EQUATION 2
+        #
+        # nMnO =
+        # nSL*K2*(Mn)*(fO*O)
+        # ======================================================
+
+        r2 = (
+
+            nMnO
+            -
+            nSL*K2*Mn*(fO*O)
+
+        )
+
+
+        # ======================================================
+        # EQUATION 3
+        #
+        # nFeO =
+        # nSL*K3*(fO*O)
+        # ======================================================
+
+        r3 = (
+
+            nFeO
+            -
+            nSL*K3*(fO*O)
+
+        )
+
+
+        # ======================================================
+        # EQUATION 4
+        #
+        # mSi =
+        # m0_Si - MSi*nSiO2
+        # ======================================================
+
+        r4 = (
+
+            mSi
+            -
+            (
+                m0_Si
+                -
+                M_Si*nSiO2
+            )
+
+        )
+
+
+        # ======================================================
+        # EQUATION 5
+        #
+        # mMn =
+        # m0_Mn - MMn*nMnO
+        # ======================================================
+
+        r5 = (
+
+            mMn
+            -
+            (
+                m0_Mn
+                -
+                M_Mn*nMnO
+            )
+
+        )
+
+
+        # ======================================================
+        # EQUATION 6
+        #
+        # mFe =
+        # m0_Fe - MFe*nFeO
+        # ======================================================
+
+        r6 = (
+
+            mFe
+            -
+            (
+                m0_Fe
+                -
+                M_Fe*nFeO
+            )
+
+        )
+
+
+        # ======================================================
+        # EQUATION 7
+        #
+        # mO =
+        # m0_O - MO*(2*nSiO2+nMnO+nFeO)
+        # ======================================================
+
+        r7 = (
+
+            mO
+            -
+            (
+                m0_O
+                -
+                M_O*(
+                    2.0*nSiO2
+                    +
+                    nMnO
+                    +
+                    nFeO
+                )
+            )
+
+        )
+
+
+        # ======================================================
+        # EQUATION 8
+        #
+        # Original:
+        #
+        # nSiO2+nMnO+nFeO=nSL
+        #
+        # For the physical non-zero slag branch:
+        #
+        # XSiO2 + XMnO + XFeO = 1
+        #
+        # This form avoids division by nSL and therefore remains
+        # usable when the initial nSL = 0.
+        # ======================================================
+
+        XSiO2 = (
+
+            K1
+            * fSi
+            * Si
+            * (fO*O)**2
+
+        )
+
+        XMnO = (
+
+            K2
+            * Mn
+            * (fO*O)
+
+        )
+
+        XFeO = (
+
+            K3
+            * (fO*O)
+
+        )
+
+        r8 = (
+
+            XSiO2
+            +
+            XMnO
+            +
+            XFeO
+            -
+            1.0
+
+        )
+
+
+        # ======================================================
+        # EQUATION 9
+        #
+        # %Si = 100*mSi/mLI
+        # ======================================================
+
+        r9 = (
+
+            Si
+            -
+            100.0*mSi/mLI
+
+        )
+
+
+        # ======================================================
+        # EQUATION 10
+        #
+        # %Mn = 100*mMn/mLI
+        # ======================================================
+
+        r10 = (
+
+            Mn
+            -
+            100.0*mMn/mLI
+
+        )
+
+
+        # ======================================================
+        # EQUATION 11
+        #
+        # %O = 100*mO/mLI
+        # ======================================================
+
+        r11 = (
+
+            O
+            -
+            100.0*mO/mLI
+
+        )
+
+
+        # ======================================================
+        # EQUATION 12
+        #
+        # mLI =
+        # mSi+mMn+mFe+mO
+        # ======================================================
+
+        r12 = (
+
+            mLI
+            -
+            (
+                mSi
+                +
+                mMn
+                +
+                mFe
+                +
+                mO
+            )
+
+        )
+
+
+        return np.array([
+
+            r1,
+            r2,
+            r3,
+            r4,
+            r5,
+            r6,
+            r7,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12
+
+        ])
+
+
+    # ----------------------------------------------------------
+    # RESIDUAL SCALING
+    # ----------------------------------------------------------
+
+    r_scale = np.array([
+
+        0.1,
+        0.1,
+        0.1,
+
+        max(abs(m0_Si), 1.0),
+        max(abs(m0_Mn), 1.0),
+        max(abs(m0_Fe), 100.0),
+        max(abs(m0_O), 1.0),
+
+        1.0,
+
+        max(abs(Si_initial), 0.5),
+        max(abs(Mn_initial), 0.5),
+        max(abs(O_initial), 1.0),
+
+        initial_mass
+
+    ], dtype=float)
+
+
+    # ----------------------------------------------------------
+    # SCALED RESIDUAL
+    # ----------------------------------------------------------
+
+    def scaled_residual(z):
+
+        return (
+
+            residual(z*u_scale)
+            /
+            r_scale
+
+        )
+
+
+    # ==========================================================
+    # NUMERICAL JACOBIAN
+    # ==========================================================
+
+    def numerical_jacobian(z):
+
+        n = len(z)
+
+        J = np.zeros((n,n))
+
+        dz = 1e-6
+
+        for j in range(n):
+
+            zp = z.copy()
+
+            zm = z.copy()
+
+            zp[j] += dz
+
+            zm[j] -= dz
+
+            J[:,j] = (
+
+                scaled_residual(zp)
+                -
+                scaled_residual(zm)
+
+            ) / (2.0*dz)
+
+        return J
+
+
+    # ==========================================================
+    # START NEWTON ITERATION
+    # ==========================================================
+
+    z = u/u_scale
+
+    history = [u.copy()]
+
+    converged = False
+
+    final_error = None
+
+
+    # ==========================================================
+    # NEWTON + UNDER-RELAXATION
+    # ==========================================================
+
+    for iteration in range(max_iterations):
+
+
+        # Current residual
+
+        R = scaled_residual(z)
+
+
+        # Maximum residual
+
+        error = np.max(
+            np.abs(R)
+        )
+
+
+        # Check convergence
+
+        if error < tolerance:
+
+            converged = True
+            final_error = error
+
+            break
+
+
+        # ------------------------------------------------------
+        # Jacobian
+        # ------------------------------------------------------
+
+        J = numerical_jacobian(z)
+
+
+        # ------------------------------------------------------
+        # Newton correction
+        #
+        # J * delta = -R
+        # ------------------------------------------------------
+
+        try:
+
+            delta = np.linalg.solve(
+                J,
+                -R
+            )
+
+        except np.linalg.LinAlgError:
+
+            raise RuntimeError(
+                "Jacobian became singular."
+            )
+
+
+        # ------------------------------------------------------
+        # Unrelaxed Newton estimate
+        # ------------------------------------------------------
+
+        z_calculated = (
+
+            z
+            +
+            delta
+
+        )
+
+
+        # ------------------------------------------------------
+        # UNDER-RELAXATION
+        #
+        # u(i+1) =
+        # u(i) + phi[
+        #       u_calculated(i+1)
+        #       - u(i)
+        # ]
+        #
+        # Equivalent:
+        #
+        # u(i+1) =
+        # phi*u_calculated
+        # +
+        # (1-phi)*u(i)
+        # ------------------------------------------------------
+
+        z_new = (
+
+            z
+            +
+            phi*(
+                z_calculated
+                -
+                z
+            )
+
+        )
+
+
+        # Convert back from scaled variables
+
+        u_new = (
+            z_new*u_scale
+        )
+
+
+        # ------------------------------------------------------
+        # Physical constraint
+        #
+        # Masses and mole numbers should not become negative.
+        # Concentrations must also remain non-negative.
+        # ------------------------------------------------------
+
+        if np.any(
+            u_new[:9] < -1e-8
+        ):
+
+            raise RuntimeError(
+                "Non-physical negative mass or mole value "
+                "appeared. Try a smaller phi."
+            )
+
+
+        # Remove tiny numerical negatives
+
+        u_new[
+            u_new < 0
+        ] = 0.0
+
+
+        # Update
+
+        u = u_new.copy()
+
+        z = u/u_scale
+
+
+        # Store iteration
+
+        history.append(
+            u.copy()
+        )
+
+
+    # If max iterations reached
+
+    if not converged:
+
+        final_error = np.max(
+            np.abs(
+                scaled_residual(z)
+            )
+        )
+
+
+    # ==========================================================
+    # FINAL SOLUTION
+    # ==========================================================
+
+    final = history[-1]
+
+
+    nSiO2 = final[0]
+    nMnO  = final[1]
+    nFeO  = final[2]
+    nSL   = final[3]
+
+    mSi   = final[4]
+    mMn   = final[5]
+    mFe   = final[6]
+    mO    = final[7]
+    mLI   = final[8]
+
+    Si    = final[9]
+    Mn    = final[10]
+    O     = final[11]
+
+
+    # Final iron %
+
+    Fe = (
+        100.0*mFe/mLI
+    )
+
+
+    # ==========================================================
+    # FINAL SLAG CALCULATIONS
+    # ==========================================================
+
+    mSiO2 = (
+        M_SiO2*nSiO2
+    )
+
+    mMnO = (
+        M_MnO*nMnO
+    )
+
+    mFeO = (
+        M_FeO*nFeO
+    )
+
+
+    mSL = (
+        mSiO2
+        +
+        mMnO
+        +
+        mFeO
+    )
+
+
+    # Slag mole fractions
+
+    if nSL > 0:
+
+        XSiO2_final = (
+            nSiO2/nSL
+        )
+
+        XMnO_final = (
+            nMnO/nSL
+        )
+
+        XFeO_final = (
+            nFeO/nSL
+        )
+
+    else:
+
+        XSiO2_final = 0.0
+        XMnO_final = 0.0
+        XFeO_final = 0.0
+
+
+    # Slag mass percentages
+
+    if mSL > 0:
+
+        SiO2_mass_pct = (
+            100.0*mSiO2/mSL
+        )
+
+        MnO_mass_pct = (
+            100.0*mMnO/mSL
+        )
+
+        FeO_mass_pct = (
+            100.0*mFeO/mSL
+        )
+
+    else:
+
+        SiO2_mass_pct = 0.0
+        MnO_mass_pct = 0.0
+        FeO_mass_pct = 0.0
+
+
+    # ==========================================================
+    # ACTIVITY COEFFICIENTS
+    # ==========================================================
+
+    fSi = 10.0 ** (
+        0.032*Si
+        -
+        0.025*O
+    )
+
+    fO = 10.0 ** (
+        0.025*Si
+        -
+        0.020*O
+    )
+
+
+    # ==========================================================
+    # MASS BALANCE ERROR
+    # ==========================================================
+
+    total_mass = (
+        mLI
+        +
+        mSL
+    )
+
+    mass_balance_error = (
+        total_mass
+        -
+        initial_mass
+    )
+
+
+    # ==========================================================
+    # RESULT DICTIONARY
+    # ==========================================================
+
+    return {
+
+        # Liquid
+        "liquid_mass": mLI,
+        "Si": Si,
+        "Mn": Mn,
+        "O": O,
+        "Fe": Fe,
+
+        # Slag
+        "slag_mass": mSL,
+        "nSL": nSL,
+
+        # Oxide mole numbers
+        "nSiO2": nSiO2,
+        "nMnO": nMnO,
+        "nFeO": nFeO,
+
+        # Oxide masses
+        "mSiO2": mSiO2,
+        "mMnO": mMnO,
+        "mFeO": mFeO,
+
+        # Slag mole fractions
+        "XSiO2": XSiO2_final,
+        "XMnO": XMnO_final,
+        "XFeO": XFeO_final,
+
+        # Slag mass %
+        "SiO2_mass_pct": SiO2_mass_pct,
+        "MnO_mass_pct": MnO_mass_pct,
+        "FeO_mass_pct": FeO_mass_pct,
+
+        # Activities
+        "fSi": fSi,
+        "fO": fO,
+
+        # Numerical information
+        "iterations": len(history)-1,
+        "error": final_error,
+        "converged": converged,
+
+        # Mass balance
+        "total_mass": total_mass,
+        "mass_balance_error": mass_balance_error,
+
+        # Detailed history
+        "history": np.array(history)
+
+    }
+
+
+# ==============================================================
+# 4. GUI APPLICATION
+# ==============================================================
+
+class EquilibriumApp:
+
+
+    def __init__(self, root):
+
+        self.root = root
+
+        self.root.title(
+            "Liquid Iron-Slag Equilibrium Solver"
+        )
+
+        self.root.geometry(
+            "1150x750"
+        )
+
+        self.root.minsize(
+            1000,
+            680
+        )
+
+
+        # Store last calculation
+
+        self.result = None
+
+
+        # ------------------------------------------------------
+        # TITLE
+        # ------------------------------------------------------
+
+        title = ttk.Label(
+            root,
+            text="LIQUID IRON - SLAG EQUILIBRIUM SOLVER",
+            font=("Arial", 20, "bold")
+        )
+
+        title.pack(
+            pady=15
+        )
+
+
+        subtitle = ttk.Label(
+            root,
+            text=(
+                "Thermodynamic Equilibrium + Mass Balance "
+                "+ Newton Iteration + Under-Relaxation"
+            ),
+            font=("Arial", 10)
+        )
+
+        subtitle.pack(
+            pady=(0,10)
+        )
+
+
+        # ------------------------------------------------------
+        # TABS
+        # ------------------------------------------------------
+
+        self.tabs = ttk.Notebook(
+            root
+        )
+
+        self.tabs.pack(
+            fill="both",
+            expand=True,
+            padx=10,
+            pady=10
+        )
+
+
+        # Create tabs
+
+        self.input_tab = ttk.Frame(
+            self.tabs
+        )
+
+        self.conv_tab = ttk.Frame(
+            self.tabs
+        )
+
+        self.sens_tab = ttk.Frame(
+            self.tabs
+        )
+
+
+        self.tabs.add(
+            self.input_tab,
+            text="Equilibrium Solver"
+        )
+
+        self.tabs.add(
+            self.conv_tab,
+            text="Convergence"
+        )
+
+        self.tabs.add(
+            self.sens_tab,
+            text="Sensitivity Analysis"
+        )
+
+
+        # Build tabs
+
+        self.build_input_tab()
+
+        self.build_convergence_tab()
+
+        self.build_sensitivity_tab()
+
+
+    # ==========================================================
+    # INPUT TAB
+    # ==========================================================
+
+    def build_input_tab(self):
+
+        # Main frame
+
+        main = ttk.Frame(
+            self.input_tab
+        )
+
+        main.pack(
+            fill="both",
+            expand=True,
+            padx=20,
+            pady=20
+        )
+
+
+        # ------------------------------------------------------
+        # INPUT FRAME
+        # ------------------------------------------------------
+
+        input_frame = ttk.LabelFrame(
+            main,
+            text="Initial Conditions",
+            padding=20
+        )
+
+        input_frame.pack(
+            side="left",
+            fill="y",
+            padx=10
+        )
+
+
+        # ------------------------------------------------------
+        # INPUT FIELDS
+        # ------------------------------------------------------
+
+        self.mass_entry = self.create_input(
+            input_frame,
+            "Initial liquid mass (g):",
+            "1000"
+        )
+
+
+        self.si_entry = self.create_input(
+            input_frame,
+            "Initial Si (wt%):",
+            "0.5"
+        )
+
+
+        self.mn_entry = self.create_input(
+            input_frame,
+            "Initial Mn (wt%):",
+            "0.5"
+        )
+
+
+        self.o_entry = self.create_input(
+            input_frame,
+            "Initial O (wt%):",
+            "1.0"
+        )
+
+
+        self.phi_entry = self.create_input(
+            input_frame,
+            "Under-relaxation φ:",
+            "0.05"
+        )
+
+
+        self.tol_entry = self.create_input(
+            input_frame,
+            "Tolerance:",
+            "1e-10"
+        )
+
+
+        # ------------------------------------------------------
+        # BUTTONS
+        # ------------------------------------------------------
+
+        button_frame = ttk.Frame(
+            input_frame
+        )
+
+        button_frame.pack(
+            pady=25
+        )
+
+
+        solve_button = ttk.Button(
+            button_frame,
+            text="SOLVE EQUILIBRIUM",
+            command=self.solve
+        )
+
+        solve_button.pack(
+            pady=5,
+            ipadx=20,
+            ipady=5
+        )
+
+
+        reset_button = ttk.Button(
+            button_frame,
+            text="RESET",
+            command=self.reset
+        )
+
+        reset_button.pack(
+            pady=5,
+            ipadx=30,
+            ipady=5
+        )
+
+
+        # ------------------------------------------------------
+        # RESULTS FRAME
+        # ------------------------------------------------------
+
+        result_frame = ttk.LabelFrame(
+            main,
+            text="Equilibrium Results",
+            padding=15
+        )
+
+        result_frame.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=10
+        )
+
+
+        self.result_text = tk.Text(
+            result_frame,
+            width=65,
+            height=30,
+            font=("Consolas", 10)
+        )
+
+        self.result_text.pack(
+            fill="both",
+            expand=True
+        )
+
+
+        self.write_message(
+            "Enter the initial conditions and click\n"
+            "'SOLVE EQUILIBRIUM'."
+        )
+
+
+    # ==========================================================
+    # CREATE INPUT FIELD
+    # ==========================================================
+
+    def create_input(
+            self,
+            parent,
+            label_text,
+            default_value):
+
+        frame = ttk.Frame(
+            parent
+        )
+
+        frame.pack(
+            fill="x",
+            pady=6
+        )
+
+
+        label = ttk.Label(
+            frame,
+            text=label_text
+        )
+
+        label.pack(
+            anchor="w"
+        )
+
+
+        entry = ttk.Entry(
+            frame,
+            width=25
+        )
+
+        entry.insert(
+            0,
+            default_value
+        )
+
+        entry.pack(
+            pady=2
+        )
+
+
+        return entry
+
+
+    # ==========================================================
+    # WRITE TO RESULT BOX
+    # ==========================================================
+
+    def write_message(
+            self,
+            message):
+
+        self.result_text.delete(
+            "1.0",
+            tk.END
+        )
+
+        self.result_text.insert(
+            tk.END,
+            message
+        )
+
+
+    # ==========================================================
+    # SOLVE BUTTON
+    # ==========================================================
+
+    def solve(self):
+
+        try:
+
+            # Read inputs
+
+            mass = float(
+                self.mass_entry.get()
+            )
+
+            Si = float(
+                self.si_entry.get()
+            )
+
+            Mn = float(
+                self.mn_entry.get()
+            )
+
+            O = float(
+                self.o_entry.get()
+            )
+
+            phi = float(
+                self.phi_entry.get()
+            )
+
+            tolerance = float(
+                self.tol_entry.get()
+            )
+
+
+            # Basic validation
+
+            if mass <= 0:
+
+                raise ValueError(
+                    "Initial mass must be positive."
+                )
+
+
+            if Si < 0 or Mn < 0 or O < 0:
+
+                raise ValueError(
+                    "Composition values cannot be negative."
+                )
+
+
+            if Si + Mn + O >= 100:
+
+                raise ValueError(
+                    "Si + Mn + O must be less than 100 wt%."
+                )
+
+
+            if phi <= 0 or phi > 1:
+
+                raise ValueError(
+                    "Under-relaxation phi must be between 0 and 1."
+                )
+
+
+            # --------------------------------------------------
+            # Run solver
+            # --------------------------------------------------
+
+            self.result = solve_equilibrium(
+
+                initial_mass=mass,
+                Si_initial=Si,
+                Mn_initial=Mn,
+                O_initial=O,
+                phi=phi,
+                tolerance=tolerance
+
+            )
+
+
+            # Display
+
+            self.display_results(
+                self.result
+            )
+
+
+            # Update convergence graph
+
+            self.update_convergence_plot()
+
+
+            # Update sensitivity default
+
+            self.update_sensitivity_plot()
+
+
+            # Open convergence tab
+
+            self.tabs.select(
+                self.input_tab
+            )
+
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Calculation Error",
+                str(e)
+            )
+
+
+    # ==========================================================
+    # DISPLAY RESULTS
+    # ==========================================================
+
+    def display_results(
+            self,
+            r):
+
+        text = ""
+
+        text += "="*65 + "\n"
+        text += "FINAL EQUILIBRIUM SOLUTION\n"
+        text += "="*65 + "\n\n"
+
+
+        # ------------------------------------------------------
+        # LIQUID IRON
+        # ------------------------------------------------------
+
+        text += "LIQUID IRON\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"Mass       : "
+            f"{r['liquid_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"Si         : "
+            f"{r['Si']:.8f} wt%\n"
+        )
+
+        text += (
+            f"Mn         : "
+            f"{r['Mn']:.8f} wt%\n"
+        )
+
+        text += (
+            f"O          : "
+            f"{r['O']:.8f} wt%\n"
+        )
+
+        text += (
+            f"Fe         : "
+            f"{r['Fe']:.8f} wt%\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # SLAG
+        # ------------------------------------------------------
+
+        text += "SLAG\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"Slag mass  : "
+            f"{r['slag_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"nSL        : "
+            f"{r['nSL']:.8f} mol\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # OXIDE MOLES
+        # ------------------------------------------------------
+
+        text += "OXIDE MOLES\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"nSiO2      : "
+            f"{r['nSiO2']:.8f} mol\n"
+        )
+
+        text += (
+            f"nMnO       : "
+            f"{r['nMnO']:.8f} mol\n"
+        )
+
+        text += (
+            f"nFeO       : "
+            f"{r['nFeO']:.8f} mol\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # SLAG COMPOSITION
+        # ------------------------------------------------------
+
+        text += "SLAG COMPOSITION\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"SiO2       : "
+            f"{r['SiO2_mass_pct']:.8f} mass%\n"
+        )
+
+        text += (
+            f"MnO        : "
+            f"{r['MnO_mass_pct']:.8f} mass%\n"
+        )
+
+        text += (
+            f"FeO        : "
+            f"{r['FeO_mass_pct']:.8f} mass%\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # SLAG MOLE FRACTIONS
+        # ------------------------------------------------------
+
+        text += "SLAG MOLE FRACTIONS\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"XSiO2      : "
+            f"{r['XSiO2']:.8f}\n"
+        )
+
+        text += (
+            f"XMnO       : "
+            f"{r['XMnO']:.8f}\n"
+        )
+
+        text += (
+            f"XFeO       : "
+            f"{r['XFeO']:.8f}\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # ACTIVITY COEFFICIENTS
+        # ------------------------------------------------------
+
+        text += "ACTIVITY COEFFICIENTS\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"fSi        : "
+            f"{r['fSi']:.8f}\n"
+        )
+
+        text += (
+            f"fO         : "
+            f"{r['fO']:.8f}\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # NUMERICAL CONVERGENCE
+        # ------------------------------------------------------
+
+        text += "NUMERICAL CONVERGENCE\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"Iterations : "
+            f"{r['iterations']}\n"
+        )
+
+        text += (
+            f"Residual   : "
+            f"{r['error']:.3e}\n"
+        )
+
+        text += (
+            f"Converged  : "
+            f"{r['converged']}\n\n"
+        )
+
+
+        # ------------------------------------------------------
+        # MASS BALANCE
+        # ------------------------------------------------------
+
+        text += "MASS BALANCE CHECK\n"
+        text += "-"*65 + "\n"
+
+        text += (
+            f"Initial    : "
+            f"{r['total_mass'] - r['slag_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"LI         : "
+            f"{r['liquid_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"Slag       : "
+            f"{r['slag_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"Total      : "
+            f"{r['total_mass']:.8f} g\n"
+        )
+
+        text += (
+            f"Error      : "
+            f"{r['mass_balance_error']:.3e} g\n"
+        )
+
+
+        self.write_message(
+            text
+        )
+
+
+    # ==========================================================
+    # CONVERGENCE TAB
+    # ==========================================================
+
+    def build_convergence_tab(self):
+
+        self.conv_figure = Figure(
+            figsize=(10,7),
+            dpi=100
+        )
+
+
+        self.conv_canvas = (
+            FigureCanvasTkAgg(
+                self.conv_figure,
+                master=self.conv_tab
+            )
+        )
+
+
+        self.conv_canvas.get_tk_widget().pack(
+            fill="both",
+            expand=True
+        )
+
+
+    # ==========================================================
+    # UPDATE CONVERGENCE PLOT
+    # ==========================================================
+
+    def update_convergence_plot(self):
+
+        if self.result is None:
+
+            return
+
+
+        history = (
+            self.result["history"]
+        )
+
+
+        iterations = np.arange(
+            len(history)
+        )
+
+
+        self.conv_figure.clear()
+
+
+        # 2 x 2 graph
+
+        ax1 = self.conv_figure.add_subplot(
+            221
+        )
+
+        ax2 = self.conv_figure.add_subplot(
+            222
+        )
+
+        ax3 = self.conv_figure.add_subplot(
+            223
+        )
+
+        ax4 = self.conv_figure.add_subplot(
+            224
+        )
+
+
+        # ------------------------------------------------------
+        # nSL
+        # ------------------------------------------------------
+
+        ax1.plot(
+            iterations,
+            history[:,3]
+        )
+
+        ax1.set_title(
+            "Convergence of nSL"
+        )
+
+        ax1.set_xlabel(
+            "Iteration"
+        )
+
+        ax1.set_ylabel(
+            "nSL (mol)"
+        )
+
+        ax1.grid(True)
+
+
+        # ------------------------------------------------------
+        # Si
+        # ------------------------------------------------------
+
+        ax2.plot(
+            iterations,
+            history[:,9]
+        )
+
+        ax2.set_title(
+            "Convergence of [%Si]"
+        )
+
+        ax2.set_xlabel(
+            "Iteration"
+        )
+
+        ax2.set_ylabel(
+            "Si (wt%)"
+        )
+
+        ax2.grid(True)
+
+
+        # ------------------------------------------------------
+        # Mn
+        # ------------------------------------------------------
+
+        ax3.plot(
+            iterations,
+            history[:,10]
+        )
+
+        ax3.set_title(
+            "Convergence of [%Mn]"
+        )
+
+        ax3.set_xlabel(
+            "Iteration"
+        )
+
+        ax3.set_ylabel(
+            "Mn (wt%)"
+        )
+
+        ax3.grid(True)
+
+
+        # ------------------------------------------------------
+        # O
+        # ------------------------------------------------------
+
+        ax4.plot(
+            iterations,
+            history[:,11]
+        )
+
+        ax4.set_title(
+            "Convergence of [%O]"
+        )
+
+        ax4.set_xlabel(
+            "Iteration"
+        )
+
+        ax4.set_ylabel(
+            "O (wt%)"
+        )
+
+        ax4.grid(True)
+
+
+        self.conv_figure.tight_layout()
+
+
+        self.conv_canvas.draw()
+
+
+    # ==========================================================
+    # SENSITIVITY TAB
+    # ==========================================================
+
+    def build_sensitivity_tab(self):
+
+        top = ttk.Frame(
+            self.sens_tab
+        )
+
+        top.pack(
+            fill="x",
+            padx=20,
+            pady=10
+        )
+
+
+        # ------------------------------------------------------
+        # O RANGE
+        # ------------------------------------------------------
+
+        ttk.Label(
+            top,
+            text="Initial O minimum (wt%):"
+        ).grid(
+            row=0,
+            column=0,
+            padx=5
+        )
+
+
+        self.o_min_entry = ttk.Entry(
+            top,
+            width=10
+        )
+
+        self.o_min_entry.insert(
+            0,
+            "0.5"
+        )
+
+        self.o_min_entry.grid(
+            row=0,
+            column=1
+        )
+
+
+        ttk.Label(
+            top,
+            text="Initial O maximum (wt%):"
+        ).grid(
+            row=0,
+            column=2,
+            padx=5
+        )
+
+
+        self.o_max_entry = ttk.Entry(
+            top,
+            width=10
+        )
+
+        self.o_max_entry.insert(
+            0,
+            "1.5"
+        )
+
+        self.o_max_entry.grid(
+            row=0,
+            column=3
+        )
+
+
+        ttk.Label(
+            top,
+            text="Number of points:"
+        ).grid(
+            row=0,
+            column=4,
+            padx=5
+        )
+
+
+        self.points_entry = ttk.Entry(
+            top,
+            width=10
+        )
+
+        self.points_entry.insert(
+            0,
+            "5"
+        )
+
+        self.points_entry.grid(
+            row=0,
+            column=5
+        )
+
+
+        run_button = ttk.Button(
+            top,
+            text="RUN SENSITIVITY ANALYSIS",
+            command=self.run_sensitivity
+        )
+
+        run_button.grid(
+            row=0,
+            column=6,
+            padx=15
+        )
+
+
+        # ------------------------------------------------------
+        # Figure
+        # ------------------------------------------------------
+
+        self.sens_figure = Figure(
+            figsize=(9,6),
+            dpi=100
+        )
+
+
+        self.sens_canvas = (
+            FigureCanvasTkAgg(
+                self.sens_figure,
+                master=self.sens_tab
+            )
+        )
+
+
+        self.sens_canvas.get_tk_widget().pack(
+            fill="both",
+            expand=True
+        )
+
+
+    # ==========================================================
+    # RUN SENSITIVITY ANALYSIS
+    # ==========================================================
+
+    def run_sensitivity(self):
+
+        try:
+
+            O_min = float(
+                self.o_min_entry.get()
+            )
+
+            O_max = float(
+                self.o_max_entry.get()
+            )
+
+            points = int(
+                self.points_entry.get()
+            )
+
+
+            if points < 2:
+
+                raise ValueError(
+                    "Use at least 2 points."
+                )
+
+
+            if O_min < 0 or O_max <= O_min:
+
+                raise ValueError(
+                    "Invalid oxygen range."
+                )
+
+
+            # Read current metal conditions
+
+            mass = float(
+                self.mass_entry.get()
+            )
+
+            Si = float(
+                self.si_entry.get()
+            )
+
+            Mn = float(
+                self.mn_entry.get()
+            )
+
+            phi = float(
+                self.phi_entry.get()
+            )
+
+            tolerance = float(
+                self.tol_entry.get()
+            )
+
+
+            # Oxygen values
+
+            O_values = np.linspace(
+                O_min,
+                O_max,
+                points
+            )
+
+
+            # Results
+
+            slag_masses = []
+
+            equilibrium_Si = []
+
+            equilibrium_Mn = []
+
+            equilibrium_O = []
+
+
+            for O_initial in O_values:
+
+
+                result = solve_equilibrium(
+
+                    initial_mass=mass,
+
+                    Si_initial=Si,
+
+                    Mn_initial=Mn,
+
+                    O_initial=O_initial,
+
+                    phi=phi,
+
+                    tolerance=tolerance
+
+                )
+
+
+                slag_masses.append(
+                    result["slag_mass"]
+                )
+
+                equilibrium_Si.append(
+                    result["Si"]
+                )
+
+                equilibrium_Mn.append(
+                    result["Mn"]
+                )
+
+                equilibrium_O.append(
+                    result["O"]
+                )
+
+
+            # --------------------------------------------------
+            # Plot
+            # --------------------------------------------------
+
+            self.sens_figure.clear()
+
+
+            ax = self.sens_figure.add_subplot(
+                111
+            )
+
+
+            ax.plot(
+                O_values,
+                slag_masses,
+                "o-"
+            )
+
+
+            ax.set_xlabel(
+                "Initial Oxygen (wt%)"
+            )
+
+            ax.set_ylabel(
+                "Equilibrium Slag Mass (g)"
+            )
+
+            ax.set_title(
+                "Sensitivity of Slag Formation to Initial Oxygen"
+            )
+
+            ax.grid(True)
+
+
+            self.sens_figure.tight_layout()
+
+
+            self.sens_canvas.draw()
+
+
+            # --------------------------------------------------
+            # Save data internally
+            # --------------------------------------------------
+
+            self.sensitivity_data = {
+
+                "O_initial": O_values,
+
+                "slag_mass": np.array(
+                    slag_masses
+                ),
+
+                "Si_equilibrium": np.array(
+                    equilibrium_Si
+                ),
+
+                "Mn_equilibrium": np.array(
+                    equilibrium_Mn
+                ),
+
+                "O_equilibrium": np.array(
+                    equilibrium_O
+                )
+
+            }
+
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Sensitivity Analysis Error",
+                str(e)
+            )
+
+
+    # ==========================================================
+    # RESET
+    # ==========================================================
+
+    def reset(self):
+
+        self.mass_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.mass_entry.insert(
+            0,
+            "1000"
+        )
+
+
+        self.si_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.si_entry.insert(
+            0,
+            "0.5"
+        )
+
+
+        self.mn_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.mn_entry.insert(
+            0,
+            "0.5"
+        )
+
+
+        self.o_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.o_entry.insert(
+            0,
+            "1.0"
+        )
+
+
+        self.phi_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.phi_entry.insert(
+            0,
+            "0.05"
+        )
+
+
+        self.tol_entry.delete(
+            0,
+            tk.END
+        )
+
+        self.tol_entry.insert(
+            0,
+            "1e-10"
+        )
+
+
+        self.result = None
+
+
+        self.write_message(
+            "Enter the initial conditions and click\n"
+            "'SOLVE EQUILIBRIUM'."
+        )
+
+
+        self.conv_figure.clear()
+
+        self.conv_canvas.draw()
+
+
+# ==============================================================
+# 5. RUN APPLICATION
+# ==============================================================
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    app = EquilibriumApp(
+        root
+    )
+
+    root.mainloop()
