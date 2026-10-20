@@ -1,0 +1,1152 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# ============================================================
+# 1. GIVEN DATA
+# ============================================================
+
+K1 = 46194.5
+K2 = 14.531
+K3 = 4.678
+
+# Atomic masses (g/mol)
+M_Si = 28.0855
+M_Mn = 54.938
+M_O  = 15.999
+M_Fe = 55.845
+
+# Molecular masses (g/mol)
+M_SiO2 = M_Si + 2.0*M_O
+M_MnO  = M_Mn + M_O
+M_FeO  = M_Fe + M_O
+
+
+# ============================================================
+# 2. INITIAL LIQUID IRON
+# ============================================================
+
+# Initial mass = 1 kg = 1000 g
+
+m0_Si = 5.0       # 0.5 wt%
+m0_Mn = 5.0       # 0.5 wt%
+m0_Fe = 980.0     # remaining Fe
+m0_O  = 10.0      # 1.0 wt%
+
+
+# ============================================================
+# 3. 12 UNKNOWN VARIABLES
+#
+# u =
+#
+# 0  nSiO2
+# 1  nMnO
+# 2  nFeO 
+# 3  nSL
+# 4  mSi
+# 5  mMn
+# 6  mFe
+# 7  mO
+# 8  mLI
+# 9  %Si
+# 10 %Mn
+# 11 %O
+#
+# ============================================================
+
+
+# ============================================================
+# 4. INITIAL VALUES
+#
+# As specified:
+# nSL = 0 initially
+#
+# All oxide mole numbers therefore also start at zero.
+# ============================================================
+
+u = np.array([
+    0.0,      # nSiO2
+    0.0,      # nMnO
+    0.0,      # nFeO
+    0.0,      # nSL
+
+    5.0,      # mSi
+    5.0,      # mMn
+    980.0,    # mFe
+    10.0,     # mO
+    1000.0,   # mLI
+
+    0.5,      # %Si
+    0.5,      # %Mn
+    1.0       # %O
+], dtype=float)
+
+
+# ============================================================
+# 5. UNDER-RELAXATION
+# ============================================================
+
+phi = 0.05
+
+tolerance = 1.0e-10
+
+max_iterations = 3000
+
+
+# ============================================================
+# 6. VARIABLE SCALING
+#
+# The variables have very different sizes:
+#
+# nSiO2 ~ 0.18
+# mFe   ~ 972
+# %Si   ~ 0.001
+#
+# Scaling improves numerical stability.
+# ============================================================
+
+u_scale = np.array([
+    0.1,      # nSiO2
+    0.1,      # nMnO
+    0.1,      # nFeO
+    0.4,      # nSL
+
+    5.0,      # mSi
+    5.0,      # mMn
+    980.0,    # mFe
+    10.0,     # mO
+    1000.0,   # mLI
+
+    0.5,      # %Si
+    0.5,      # %Mn
+    1.0       # %O
+])
+
+
+# ============================================================
+# 7. RESIDUAL EQUATIONS
+#
+# These represent equations 1-12.
+# ============================================================
+
+def residual(u):
+
+    # Unpack variables
+
+    nSiO2 = u[0]
+    nMnO  = u[1]
+    nFeO  = u[2]
+    nSL   = u[3]
+
+    mSi   = u[4]
+    mMn   = u[5]
+    mFe   = u[6]
+    mO    = u[7]
+    mLI   = u[8]
+
+    Si    = u[9]
+    Mn    = u[10]
+    O     = u[11]
+
+
+    # --------------------------------------------------------
+    # Activity coefficients
+    # --------------------------------------------------------
+
+    fSi = 10.0**(
+        0.032*Si - 0.025*O
+    )
+
+    fO = 10.0**(
+        0.025*Si - 0.020*O
+    )
+
+
+    # ========================================================
+    # EQUATION 1
+    #
+    # nSiO2 = nSL*K1*(fSi*%Si)*(fO*%O)^2
+    # ========================================================
+
+    r1 = (
+        nSiO2
+        -
+        nSL*K1*fSi*Si*(fO*O)**2
+    )
+
+
+    # ========================================================
+    # EQUATION 2
+    #
+    # nMnO = nSL*K2*(%Mn)*(fO*%O)
+    # ========================================================
+
+    r2 = (
+        nMnO
+        -
+        nSL*K2*Mn*(fO*O)
+    )
+
+
+    # ========================================================
+    # EQUATION 3
+    #
+    # nFeO = nSL*K3*(fO*%O)
+    # ========================================================
+
+    r3 = (
+        nFeO
+        -
+        nSL*K3*(fO*O)
+    )
+
+
+    # ========================================================
+    # EQUATION 4
+    #
+    # mSi = m0_Si - MSi*nSiO2
+    # ========================================================
+
+    r4 = (
+        mSi
+        -
+        (m0_Si - M_Si*nSiO2)
+    )
+
+
+    # ========================================================
+    # EQUATION 5
+    #
+    # mMn = m0_Mn - MMn*nMnO
+    # ========================================================
+
+    r5 = (
+        mMn
+        -
+        (m0_Mn - M_Mn*nMnO)
+    )
+
+
+    # ========================================================
+    # EQUATION 6
+    #
+    # mFe = m0_Fe - MFe*nFeO
+    # ========================================================
+
+    r6 = (
+        mFe
+        -
+        (m0_Fe - M_Fe*nFeO)
+    )
+
+
+    # ========================================================
+    # EQUATION 7
+    #
+    # mO = m0_O - MO*(2*nSiO2+nMnO+nFeO)
+    # ========================================================
+
+    r7 = (
+        mO
+        -
+        (
+            m0_O
+            -
+            M_O*(2*nSiO2 + nMnO + nFeO)
+        )
+    )
+
+
+    # ========================================================
+    # EQUATION 8
+    #
+    # nSiO2+nMnO+nFeO=nSL
+    #
+    # For the non-zero slag branch:
+    #
+    # XSiO2 + XMnO + XFeO = 1
+    #
+    # We calculate X directly from Q=K equations.
+    #
+    # This does NOT divide by nSL, so there is no division
+    # by zero at the starting iteration.
+    # ========================================================
+
+    XSiO2 = (
+        K1
+        * fSi
+        * Si
+        * (fO*O)**2
+    )
+
+    XMnO = (
+        K2
+        * Mn
+        * (fO*O)
+    )
+
+    XFeO = (
+        K3
+        * (fO*O)
+    )
+
+    r8 = (
+        XSiO2
+        + XMnO
+        + XFeO
+        - 1.0
+    )
+
+
+    # ========================================================
+    # EQUATION 9
+    #
+    # %Si = 100*mSi/mLI
+    # ========================================================
+
+    r9 = (
+        Si
+        -
+        100.0*mSi/mLI
+    )
+
+
+    # ========================================================
+    # EQUATION 10
+    #
+    # %Mn = 100*mMn/mLI
+    # ========================================================
+
+    r10 = (
+        Mn
+        -
+        100.0*mMn/mLI
+    )
+
+
+    # ========================================================
+    # EQUATION 11
+    #
+    # %O = 100*mO/mLI
+    # ========================================================
+
+    r11 = (
+        O
+        -
+        100.0*mO/mLI
+    )
+
+
+    # ========================================================
+    # EQUATION 12
+    #
+    # mLI = mSi+mMn+mFe+mO
+    # ========================================================
+
+    r12 = (
+        mLI
+        -
+        (mSi + mMn + mFe + mO)
+    )
+
+
+    return np.array([
+        r1,
+        r2,
+        r3,
+        r4,
+        r5,
+        r6,
+        r7,
+        r8,
+        r9,
+        r10,
+        r11,
+        r12
+    ])
+
+
+# ============================================================
+# 8. SCALE THE EQUATIONS
+# ============================================================
+
+# Residual scaling
+#
+# This is only numerical scaling; it does not change the
+# physical equations.
+
+r_scale = np.array([
+    0.1,       # Eq 1
+    0.1,       # Eq 2
+    0.1,       # Eq 3
+    1.0,       # Eq 4
+    1.0,       # Eq 5
+    100.0,     # Eq 6
+    1.0,       # Eq 7
+    1.0,       # Eq 8
+    0.5,       # Eq 9
+    0.5,       # Eq 10
+    1.0,       # Eq 11
+    1000.0     # Eq 12
+])
+
+
+def scaled_residual(z):
+
+    return residual(
+        z*u_scale
+    ) / r_scale
+
+
+# ============================================================
+# 9. NUMERICAL JACOBIAN
+# ============================================================
+
+def numerical_jacobian(z):
+
+    n = len(z)
+
+    J = np.zeros((n,n))
+
+    dz = 1.0e-6
+
+    for j in range(n):
+
+        zp = z.copy()
+        zm = z.copy()
+
+        zp[j] += dz
+        zm[j] -= dz
+
+        J[:,j] = (
+            scaled_residual(zp)
+            -
+            scaled_residual(zm)
+        )/(2.0*dz)
+
+    return J
+
+
+# ============================================================
+# 10. CONVERGENCE HISTORY
+# ============================================================
+
+history = []
+
+history.append(
+    u.copy()
+)
+
+
+# Convert to scaled variables
+
+z = u/u_scale
+
+
+# ============================================================
+# 11. NEWTON + UNDER-RELAXATION
+# ============================================================
+
+for iteration in range(max_iterations):
+
+
+    # --------------------------------------------------------
+    # Current residual
+    # --------------------------------------------------------
+
+    R = scaled_residual(z)
+
+    error = np.max(
+        np.abs(R)
+    )
+
+
+    # --------------------------------------------------------
+    # Check convergence
+    # --------------------------------------------------------
+
+    if error < tolerance:
+
+        print(
+            "\nConverged after",
+            iteration,
+            "iterations."
+        )
+
+        break
+
+
+    # --------------------------------------------------------
+    # Jacobian
+    # --------------------------------------------------------
+
+    J = numerical_jacobian(z)
+
+
+    # --------------------------------------------------------
+    # Newton equation
+    #
+    # J * delta = -R
+    # --------------------------------------------------------
+
+    delta = np.linalg.solve(
+        J,
+        -R
+    )
+
+
+    # --------------------------------------------------------
+    # Calculate unrelaxed Newton solution
+    # --------------------------------------------------------
+
+    z_calculated = z + delta
+
+
+    # --------------------------------------------------------
+    # UNDER-RELAXATION
+    #
+    # u(i+1) =
+    # u(i) + phi*[u_calculated(i+1)-u(i)]
+    #
+    # Equivalent to:
+    #
+    # u(i+1) =
+    # phi*u_calculated
+    # +
+    # (1-phi)*u(i)
+    # --------------------------------------------------------
+
+    z_new = (
+        z
+        +
+        phi*(z_calculated-z)
+    )
+
+
+    # --------------------------------------------------------
+    # Convert back to physical variables
+    # --------------------------------------------------------
+
+    u_new = (
+        z_new*u_scale
+    )
+
+
+    # --------------------------------------------------------
+    # Prevent tiny negative values caused by round-off
+    # --------------------------------------------------------
+
+    u_new[
+        u_new < 0
+    ] = 0.0
+
+
+    # --------------------------------------------------------
+    # Update
+    # --------------------------------------------------------
+
+    z = u_new/u_scale
+
+    u = u_new.copy()
+
+
+    # --------------------------------------------------------
+    # Store iteration
+    # --------------------------------------------------------
+
+    history.append(
+        u.copy()
+    )
+
+
+else:
+
+    print(
+        "WARNING: Maximum iterations reached."
+    )
+
+
+# ============================================================
+# 12. CONVERT HISTORY TO ARRAY
+# ============================================================
+
+history = np.array(
+    history
+)
+
+iterations = np.arange(
+    len(history)
+)
+
+
+# ============================================================
+# 13. FINAL SOLUTION
+# ============================================================
+
+final = history[-1]
+
+
+nSiO2 = final[0]
+nMnO  = final[1]
+nFeO  = final[2]
+nSL   = final[3]
+
+mSi   = final[4]
+mMn   = final[5]
+mFe   = final[6]
+mO    = final[7]
+mLI   = final[8]
+
+Si    = final[9]
+Mn    = final[10]
+O     = final[11]
+
+
+# Final Fe wt%
+
+Fe = (
+    100.0*mFe/mLI
+)
+
+
+# ============================================================
+# 14. FINAL SLAG CALCULATIONS
+# ============================================================
+
+mSiO2 = M_SiO2*nSiO2
+
+mMnO = M_MnO*nMnO
+
+mFeO = M_FeO*nFeO
+
+mSL = (
+    mSiO2
+    + mMnO
+    + mFeO
+)
+
+
+# Mole fractions
+
+XSiO2 = (
+    nSiO2/nSL
+)
+
+XMnO = (
+    nMnO/nSL
+)
+
+XFeO = (
+    nFeO/nSL
+)
+
+
+# ============================================================
+# 15. PRINT RESULTS
+# ============================================================
+
+print("\n")
+print("="*65)
+print("FINAL EQUILIBRIUM RESULTS")
+print("="*65)
+
+
+print("\nLIQUID IRON")
+print("-"*65)
+
+print(
+    f"Mass = {mLI:.8f} g"
+)
+
+print(
+    f"Si   = {Si:.8f} wt%"
+)
+
+print(
+    f"Mn   = {Mn:.8f} wt%"
+)
+
+print(
+    f"O    = {O:.8f} wt%"
+)
+
+print(
+    f"Fe   = {Fe:.8f} wt%"
+)
+
+
+print("\nSLAG")
+print("-"*65)
+
+print(
+    f"Mass = {mSL:.8f} g"
+)
+
+print(
+    f"nSL  = {nSL:.8f} mol"
+)
+
+
+print("\nSLAG COMPOSITION")
+print("-"*65)
+
+print(
+    f"SiO2 = {100*mSiO2/mSL:.8f} mass%"
+)
+
+print(
+    f"MnO  = {100*mMnO/mSL:.8f} mass%"
+)
+
+print(
+    f"FeO  = {100*mFeO/mSL:.8f} mass%"
+)
+
+
+print("\nSLAG MOLE FRACTIONS")
+print("-"*65)
+
+print(
+    f"XSiO2 = {XSiO2:.8f}"
+)
+
+print(
+    f"XMnO  = {XMnO:.8f}"
+)
+
+print(
+    f"XFeO  = {XFeO:.8f}"
+)
+
+
+print("\nOXIDE MOLES")
+print("-"*65)
+
+print(
+    f"nSiO2 = {nSiO2:.8f} mol"
+)
+
+print(
+    f"nMnO  = {nMnO:.8f} mol"
+)
+
+print(
+    f"nFeO  = {nFeO:.8f} mol"
+)
+
+
+print("\nMASS BALANCE")
+print("-"*65)
+
+print(
+    f"Initial mass = 1000.00000000 g"
+)
+
+print(
+    f"Liquid iron = {mLI:.8f} g"
+)
+
+print(
+    f"Slag        = {mSL:.8f} g"
+)
+
+print(
+    f"Total       = {mLI+mSL:.8f} g"
+)
+
+print(
+    f"Error       = "
+    f"{mLI+mSL-1000:.3e} g"
+)
+
+
+# ============================================================
+# 16. CONVERGENCE PLOTS
+# ============================================================
+
+
+# ------------------------------------------------------------
+# nSiO2
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,0]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("nSiO2 (mol)")
+plt.title("Convergence of nSiO2")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# nMnO
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,1]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("nMnO (mol)")
+plt.title("Convergence of nMnO")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# nFeO
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,2]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("nFeO (mol)")
+plt.title("Convergence of nFeO")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# nSL
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,3]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("nSL (mol)")
+plt.title("Convergence of nSL")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# mSi
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,4]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("mSi (g)")
+plt.title("Convergence of mSi")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# mMn
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,5]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("mMn (g)")
+plt.title("Convergence of mMn")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# mFe
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,6]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("mFe (g)")
+plt.title("Convergence of mFe")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# mO
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,7]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("mO (g)")
+plt.title("Convergence of mO")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# mLI
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,8]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("mLI (g)")
+plt.title("Convergence of Liquid Iron Mass")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# Si
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,9]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("Si (wt%)")
+plt.title("Convergence of [%Si]")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# Mn
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,10]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("Mn (wt%)")
+plt.title("Convergence of [%Mn]")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ------------------------------------------------------------
+# O
+# ------------------------------------------------------------
+
+plt.figure(figsize=(7,5))
+
+plt.plot(
+    iterations,
+    history[:,11]
+)
+
+plt.xlabel("Iteration")
+plt.ylabel("O (wt%)")
+plt.title("Convergence of [%O]")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# 17. COMPILED CONVERGENCE PLOT
+# ============================================================
+
+fig, axes = plt.subplots(
+    3,
+    4,
+    figsize=(15,10)
+)
+
+
+# Row 1
+
+axes[0,0].plot(
+    iterations,
+    history[:,0]
+)
+axes[0,0].set_title("nSiO2")
+axes[0,0].set_xlabel("Iteration")
+axes[0,0].set_ylabel("mol")
+axes[0,0].grid(True)
+
+
+axes[0,1].plot(
+    iterations,
+    history[:,1]
+)
+axes[0,1].set_title("nMnO")
+axes[0,1].set_xlabel("Iteration")
+axes[0,1].set_ylabel("mol")
+axes[0,1].grid(True)
+
+
+axes[0,2].plot(
+    iterations,
+    history[:,2]
+)
+axes[0,2].set_title("nFeO")
+axes[0,2].set_xlabel("Iteration")
+axes[0,2].set_ylabel("mol")
+axes[0,2].grid(True)
+
+
+axes[0,3].plot(
+    iterations,
+    history[:,3]
+)
+axes[0,3].set_title("nSL")
+axes[0,3].set_xlabel("Iteration")
+axes[0,3].set_ylabel("mol")
+axes[0,3].grid(True)
+
+
+# Row 2
+
+axes[1,0].plot(
+    iterations,
+    history[:,4]
+)
+axes[1,0].set_title("mSi")
+axes[1,0].set_xlabel("Iteration")
+axes[1,0].set_ylabel("g")
+axes[1,0].grid(True)
+
+
+axes[1,1].plot(
+    iterations,
+    history[:,5]
+)
+axes[1,1].set_title("mMn")
+axes[1,1].set_xlabel("Iteration")
+axes[1,1].set_ylabel("g")
+axes[1,1].grid(True)
+
+
+axes[1,2].plot(
+    iterations,
+    history[:,6]
+)
+axes[1,2].set_title("mFe")
+axes[1,2].set_xlabel("Iteration")
+axes[1,2].set_ylabel("g")
+axes[1,2].grid(True)
+
+
+axes[1,3].plot(
+    iterations,
+    history[:,7]
+)
+axes[1,3].set_title("mO")
+axes[1,3].set_xlabel("Iteration")
+axes[1,3].set_ylabel("g")
+axes[1,3].grid(True)
+
+
+# Row 3
+
+axes[2,0].plot(
+    iterations,
+    history[:,8]
+)
+axes[2,0].set_title("mLI")
+axes[2,0].set_xlabel("Iteration")
+axes[2,0].set_ylabel("g")
+axes[2,0].grid(True)
+
+
+axes[2,1].plot(
+    iterations,
+    history[:,9]
+)
+axes[2,1].set_title("[%Si]")
+axes[2,1].set_xlabel("Iteration")
+axes[2,1].set_ylabel("wt%")
+axes[2,1].grid(True)
+
+
+axes[2,2].plot(
+    iterations,
+    history[:,10]
+)
+axes[2,2].set_title("[%Mn]")
+axes[2,2].set_xlabel("Iteration")
+axes[2,2].set_ylabel("wt%")
+axes[2,2].grid(True)
+
+
+axes[2,3].plot(
+    iterations,
+    history[:,11]
+)
+axes[2,3].set_title("[%O]")
+axes[2,3].set_xlabel("Iteration")
+axes[2,3].set_ylabel("wt%")
+axes[2,3].grid(True)
+
+
+fig.suptitle(
+    "Equilibrium Mass Balance - Convergence of All Variables",
+    fontsize=16
+)
+
+fig.tight_layout()
+
+plt.show()
